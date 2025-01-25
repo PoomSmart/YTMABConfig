@@ -7,7 +7,7 @@
 	<key>CFBundleExecutable</key>
 	<string>YTMABC</string>
 	<key>CFBundleIdentifier</key>
-	<string>com.ps.ytabc</string>
+	<string>com.ps.ytmabc</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundlePackageType</key>

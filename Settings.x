@@ -37,10 +37,7 @@ NSBundle *YTMABCBundle() {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         NSString *tweakBundlePath = [[NSBundle mainBundle] pathForResource:@"YTMABC" ofType:@"bundle"];
-        if (tweakBundlePath)
-            bundle = [NSBundle bundleWithPath:tweakBundlePath];
-        else
-            bundle = [NSBundle bundleWithPath:ROOT_PATH_NS(@"/Library/Application Support/YTMABC.bundle")];
+        bundle = [NSBundle bundleWithPath:tweakBundlePath ?: ROOT_PATH_NS(@"/Library/Application Support/YTMABC.bundle")];
     });
     return bundle;
 }
@@ -86,7 +83,6 @@ static NSString *getCategory(char c, NSString *method) {
         if ([method hasPrefix:@"music"]) return @"music";
     }
     if (c == 's') {
-        if ([method hasPrefix:@"shorts"]) return @"shorts";
         if ([method hasPrefix:@"should"]) return @"should";
     }
     unichar uc = (unichar)c;
@@ -103,7 +99,7 @@ static void pushCollectionViewController(YTMSettingsResponseViewController *self
 }
 
 static void makeSelecty(YTMSettingsSectionItem *item) {
-    item.indicatorIconType = 221;
+    item.indicatorIconType = YT_CHEVRON_RIGHT;
     item.inkEnabled = YES;
 }
 
@@ -401,10 +397,6 @@ static NSString *getHardwareModel() {
 }
 
 %end
-
-// void SearchHook() {
-//     %init(Search);
-// }
 
 %ctor {
     defaults = [NSUserDefaults standardUserDefaults];

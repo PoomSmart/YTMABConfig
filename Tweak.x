@@ -39,6 +39,7 @@ static NSMutableArray <NSString *> *getBooleanMethods(Class clz) {
         Method method = methods[i];
         const char *name = sel_getName(method_getName(method));
         if (strstr(name, "ndroid") || strstr(name, "amsterdam") || strstr(name, "unplugged")) continue;
+        if (strncmp(name, "shorts", 6) == 0) continue;
         const char *encoding = method_getTypeEncoding(method);
         if (strcmp(encoding, "B16@0:8")) continue;
         NSString *selector = [NSString stringWithUTF8String:name];
