@@ -24,12 +24,12 @@ static BOOL returnFunction(id const self, SEL _cmd) {
 }
 
 static BOOL getValueFromInvocation(id target, SEL selector) {
-    NSInvocationOperation *i = [[NSInvocationOperation alloc] initWithTarget:target selector:selector object:nil];
-    [i start];
-    BOOL result = NO;
-    [i.result getValue:&result];
-    return result;
+    IMP imp = [target methodForSelector:selector];
+    BOOL (*func)(id, SEL) = (BOOL (*)(id, SEL))imp;
+    return func(target, selector);
 }
+
+static NSSet *excludedPrefixes;
 
 static NSMutableArray <NSString *> *getBooleanMethods(Class clz) {
     NSMutableArray *allMethods = [NSMutableArray array];
@@ -37,12 +37,25 @@ static NSMutableArray <NSString *> *getBooleanMethods(Class clz) {
     Method *methods = class_copyMethodList(clz, &methodCount);
     for (unsigned int i = 0; i < methodCount; ++i) {
         Method method = methods[i];
-        const char *name = sel_getName(method_getName(method));
-        if (strstr(name, "ndroid") || strstr(name, "amsterdam") || strstr(name, "unplugged")) continue;
-        if (strncmp(name, "shorts", 6) == 0) continue;
         const char *encoding = method_getTypeEncoding(method);
         if (strcmp(encoding, "B16@0:8")) continue;
-        NSString *selector = [NSString stringWithUTF8String:name];
+
+        NSString *selector = [NSString stringWithUTF8String:sel_getName(method_getName(method))];
+
+        // Check excluded prefixes efficiently
+        BOOL excluded = NO;
+        for (NSString *prefix in excludedPrefixes) {
+            if ([selector hasPrefix:prefix]) {
+                excluded = YES;
+                break;
+            }
+        }
+        // Also exclude anything containing "Android"
+        if (!excluded && [selector rangeOfString:@"Android"].location != NSNotFound) {
+            excluded = YES;
+        }
+        if (excluded) continue;
+
         if (![allMethods containsObject:selector])
             [allMethods addObject:selector];
     }
@@ -90,6 +103,7 @@ static void hookClass(NSObject *instance) {
 
 %ctor {
     cache = [NSMutableDictionary new];
+    excludedPrefixes = [NSSet setWithArray:@[@"android", @"amsterdam", @"shorts", @"unplugged"]];
     %init;
 }
 

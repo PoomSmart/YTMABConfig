@@ -15,14 +15,26 @@
 #define EnabledKey @"EnabledYTMABC"
 #define GroupedKey @"GroupedYTMABC"
 #define INCLUDED_CLASSES @"Included classes: YTGlobalConfig, YTColdConfig, YTHotConfig"
-#define EXCLUDED_METHODS @"Excluded settings: android*, amsterdam* and unplugged*"
+#define EXCLUDED_METHODS @"Excluded settings: android*, amsterdam*, shorts* and unplugged*"
 
 #define _LOC(b, x) [b localizedStringForKey:x value:nil table:nil]
 #define LOC(x) _LOC(tweakBundle, x)
 
+static const NSUInteger EstimatedCategoryCount = 26;
+static const NSUInteger EstimatedCategoryDivisor = 10;
+static const NSUInteger LongMethodNameThreshold = 26;
+static NSString * const KeyFormatString = @"%@.%@";
+static NSString * const FullKeyFormatString = @"%@.%@.%@";
+
 extern NSMutableDictionary <NSString *, NSMutableDictionary <NSString *, NSNumber *> *> *cache;
 NSUserDefaults *defaults;
-NSArray <NSString *> *allKeys;
+NSSet <NSString *> *allKeysSet;
+BOOL allKeysNeedsUpdate = YES;
+NSMutableDictionary <NSString *, NSString *> *keyCache;
+NSSortDescriptor *titleSortDescriptor;
+NSRegularExpression *importRegex;
+NSMutableDictionary <NSString *, NSString *> *categoryCache;
+NSUInteger prefixLength;
 
 BOOL tweakEnabled() {
     return [defaults boolForKey:EnabledKey];
@@ -43,50 +55,83 @@ NSBundle *YTMABCBundle() {
 }
 
 NSString *getKey(NSString *method, NSString *classKey) {
-    return [NSString stringWithFormat:@"%@.%@.%@", Prefix, classKey, method];
+    NSString *cacheKey = [NSString stringWithFormat:KeyFormatString, classKey, method];
+    NSString *fullKey = keyCache[cacheKey];
+    if (!fullKey) {
+        fullKey = [NSString stringWithFormat:FullKeyFormatString, Prefix, classKey, method];
+        keyCache[cacheKey] = fullKey;
+    }
+    return fullKey;
 }
 
 static NSString *getCacheKey(NSString *method, NSString *classKey) {
-    return [NSString stringWithFormat:@"%@.%@", classKey, method];
+    return [NSString stringWithFormat:KeyFormatString, classKey, method];
 }
 
 BOOL getValue(NSString *methodKey) {
-    if (![allKeys containsObject:methodKey])
-        return [[cache valueForKeyPath:[methodKey substringFromIndex:Prefix.length + 1]] boolValue];
+    if (!methodKey) return NO;
+    if (![allKeysSet containsObject:methodKey]) {
+        NSString *keyPath = [methodKey substringFromIndex:prefixLength + 1];
+        id value = [cache valueForKeyPath:keyPath];
+        return value ? [value boolValue] : NO;
+    }
     return [defaults boolForKey:methodKey];
 }
 
 static void setValue(NSString *method, NSString *classKey, BOOL value) {
     [cache setValue:@(value) forKeyPath:getCacheKey(method, classKey)];
     [defaults setBool:value forKey:getKey(method, classKey)];
+    allKeysNeedsUpdate = YES;
 }
 
 static void setValueFromImport(NSString *settingKey, BOOL value) {
     [cache setValue:@(value) forKeyPath:settingKey];
-    [defaults setBool:value forKey:[NSString stringWithFormat:@"%@.%@", Prefix, settingKey]];
+    [defaults setBool:value forKey:[NSString stringWithFormat:KeyFormatString, Prefix, settingKey]];
+    allKeysNeedsUpdate = YES;
 }
 
 void updateAllKeys() {
-    allKeys = [defaults dictionaryRepresentation].allKeys;
+    if (allKeysNeedsUpdate) {
+        NSArray *keys = [defaults dictionaryRepresentation].allKeys;
+        allKeysSet = [NSSet setWithArray:keys];
+        allKeysNeedsUpdate = NO;
+    }
+}
+
+static void clearCaches() {
+    [keyCache removeAllObjects];
+    [categoryCache removeAllObjects];
 }
 
 static NSString *getCategory(char c, NSString *method) {
+    // Check cache first
+    NSString *cachedCategory = categoryCache[method];
+    if (cachedCategory) return cachedCategory;
+
+    NSString *category = nil;
     if (c == 'e') {
-        if ([method hasPrefix:@"elements"]) return @"elements";
-        if ([method hasPrefix:@"enable"]) return @"enable";
+        if ([method hasPrefix:@"elements"]) category = @"elements";
+        else if ([method hasPrefix:@"enable"]) category = @"enable";
     }
-    if (c == 'i') {
-        if ([method hasPrefix:@"ios"]) return @"ios";
-        if ([method hasPrefix:@"is"]) return @"is";
+    else if (c == 'i') {
+        if ([method hasPrefix:@"ios"]) category = @"ios";
+        else if ([method hasPrefix:@"is"]) category = @"is";
     }
-    if (c == 'm') {
-        if ([method hasPrefix:@"music"]) return @"music";
+    else if (c == 'm') {
+        if ([method hasPrefix:@"music"]) category = @"music";
     }
-    if (c == 's') {
-        if ([method hasPrefix:@"should"]) return @"should";
+    else if (c == 's') {
+        if ([method hasPrefix:@"should"]) category = @"should";
     }
-    unichar uc = (unichar)c;
-    return [NSString stringWithCharacters:&uc length:1];;
+
+    if (!category) {
+        unichar uc = (unichar)c;
+        category = [NSString stringWithCharacters:&uc length:1];
+    }
+
+    // Cache the result
+    categoryCache[method] = category;
+    return category;
 }
 
 static void pushCollectionViewController(YTMSettingsResponseViewController *self, NSString *title, NSMutableArray <YTMSettingsSectionItem *> *settingItems) {
@@ -127,26 +172,35 @@ static NSString *getHardwareModel() {
         NSMutableArray <YTMSettingsSectionItem *> *settingItems = [NSMutableArray new];
         if (tweakEnabled()) {
             // AB flags
-            NSMutableDictionary <NSString *, NSMutableArray <YTMSettingsSectionItem *> *> *properties = [NSMutableDictionary dictionary];
+            // Pre-calculate total method count for capacity allocation
+            NSUInteger estimatedMethodCount = 0;
             for (NSString *classKey in cache) {
-                for (NSString *method in cache[classKey]) {
-                    char c = tolower([method characterAtIndex:0]);
-                    NSString *category = getCategory(c, method);
-                    if (![properties objectForKey:category]) properties[category] = [NSMutableArray array];
-                    updateAllKeys();
-                    BOOL modified = [allKeys containsObject:getKey(method, classKey)];
-                    NSString *modifiedTitle = modified ? [NSString stringWithFormat:@"%@ *", method] : method;
+                estimatedMethodCount += [cache[classKey] count];
+            }
+
+            NSMutableDictionary <NSString *, NSMutableArray <YTMSettingsSectionItem *> *> *properties = [NSMutableDictionary dictionaryWithCapacity:EstimatedCategoryCount];
+            updateAllKeys(); // Update once before the loop
+            for (NSString *classKey in cache) {
+                @autoreleasepool { // Drain autorelease pool periodically to reduce peak memory
+                    for (NSString *method in cache[classKey]) {
+                        if (method.length == 0) continue; // Safety check
+                        char c = tolower([method characterAtIndex:0]);
+                        NSString *category = getCategory(c, method);
+                        if (![properties objectForKey:category]) properties[category] = [NSMutableArray arrayWithCapacity:estimatedMethodCount / EstimatedCategoryDivisor];
+                        NSString *methodKey = getKey(method, classKey); // Cache the key
+                        BOOL modified = [allKeysSet containsObject:methodKey];
+                        NSString *modifiedTitle = modified ? [NSString stringWithFormat:@"%@ *", method] : method;
 
                     YTMSettingsSectionItem *methodSwitch = [YTMSettingsSectionItemClass switchItemWithTitle:modifiedTitle
-                        titleDescription:isPhone && method.length > 26 ? modifiedTitle : nil
+                        titleDescription:isPhone && method.length > LongMethodNameThreshold ? modifiedTitle : nil
                         accessibilityIdentifier:nil
-                        switchOn:getValue(getKey(method, classKey))
+                        switchOn:getValue(methodKey)
                         switchBlock:^BOOL (YTSettingsCell *cell, BOOL enabled) {
                             setValue(method, classKey, enabled);
                             return YES;
                         }
                         selectBlock:^BOOL (YTSettingsCell *cell, NSUInteger arg1) {
-                            NSString *content = [NSString stringWithFormat:@"%@.%@", classKey, method];
+                            NSString *content = [NSString stringWithFormat:KeyFormatString, classKey, method];
                             YTMAlertView *alertView = [YTMAlertViewClass confirmationDialog];
                             alertView.title = method;
                             alertView.subtitle = content;
@@ -157,9 +211,10 @@ static NSString *getHardwareModel() {
                             }];
                             updateAllKeys();
                             NSString *key = getKey(method, classKey);
-                            if ([allKeys containsObject:key]) {
+                            if ([allKeysSet containsObject:key]) {
                                 [alertView addTitle:deleteText withAction:^{
                                     [defaults removeObjectForKey:key];
+                                    allKeysNeedsUpdate = YES;
                                     updateAllKeys();
                                 }];
                             }
@@ -169,15 +224,15 @@ static NSString *getHardwareModel() {
                         }
                         settingItemId:0];
                     [properties[category] addObject:methodSwitch];
-                }
+                    }
+                } // @autoreleasepool
             }
             BOOL grouped = groupedSettings();
             for (NSString *category in properties) {
                 NSMutableArray <YTMSettingsSectionItem *> *rows = properties[category];
                 totalSettings += rows.count;
                 if (grouped) {
-                    NSSortDescriptor *sort = [NSSortDescriptor sortDescriptorWithKey:@"title" ascending:YES];
-                    [rows sortUsingDescriptors:@[sort]];
+                    [rows sortUsingDescriptors:@[titleSortDescriptor]];
                     NSString *shortTitle = [NSString stringWithFormat:@"\"%@\" (%ld)", category, rows.count];
                     NSString *title = [NSString stringWithFormat:@"%@ %@", LOC(@"SETTINGS_START_WITH"), shortTitle];
 
@@ -191,8 +246,7 @@ static NSString *getHardwareModel() {
                     [settingItems addObjectsFromArray:rows];
                 }
             }
-            NSSortDescriptor *sort = [NSSortDescriptor sortDescriptorWithKey:@"title" ascending:YES];
-            [settingItems sortUsingDescriptors:@[sort]];
+            [settingItems sortUsingDescriptors:@[titleSortDescriptor]];
 
             // Import settings
             YTMSettingsSectionItem *import = [YTMSettingsSectionItemClass itemWithTitle:LOC(@"IMPORT_SETTINGS")
@@ -202,13 +256,11 @@ static NSString *getHardwareModel() {
                 selectBlock:^BOOL (YTSettingsCell *cell, NSUInteger arg1) {
                     UIPasteboard *pasteboard = [UIPasteboard generalPasteboard];
                     NSArray *lines = [pasteboard.string componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]];
-                    NSString *pattern = @"^(YT.*Config\\..*):\\s*(\\d)$";
-                    NSRegularExpression *regex = [NSRegularExpression regularExpressionWithPattern:pattern options:0 error:nil];
-                    NSMutableDictionary *importedSettings = [NSMutableDictionary dictionary];
-                    NSMutableArray *reportedSettings = [NSMutableArray array];
+                    NSMutableDictionary *importedSettings = [NSMutableDictionary dictionaryWithCapacity:lines.count];
+                    NSMutableArray *reportedSettings = [NSMutableArray arrayWithCapacity:lines.count];
 
                     for (NSString *line in lines) {
-                        NSTextCheckingResult *match = [regex firstMatchInString:line options:0 range:NSMakeRange(0, [line length])];
+                        NSTextCheckingResult *match = [importRegex firstMatchInString:line options:0 range:NSMakeRange(0, [line length])];
                         if (match) {
                             NSString *key = [line substringWithRange:[match rangeAtIndex:1]];
                             id cacheValue = [cache valueForKeyPath:key];
@@ -253,7 +305,12 @@ static NSString *getHardwareModel() {
                 detailTextBlock:nil
                 selectBlock:^BOOL (YTSettingsCell *cell, NSUInteger arg1) {
                     UIPasteboard *pasteboard = [UIPasteboard generalPasteboard];
-                    NSMutableArray *content = [NSMutableArray array];
+                    // Pre-calculate total count for capacity
+                    NSUInteger totalCount = 0;
+                    for (NSString *classKey in cache) {
+                        totalCount += [cache[classKey] count];
+                    }
+                    NSMutableArray *content = [NSMutableArray arrayWithCapacity:totalCount + 5];
                     for (NSString *classKey in cache) {
                         [cache[classKey] enumerateKeysAndObjectsUsingBlock:^(NSString *key, NSNumber *value, BOOL* stop) {
                             [content addObject:[NSString stringWithFormat:@"%@.%@: %d", classKey, key, [value boolValue]]];
@@ -278,13 +335,14 @@ static NSString *getHardwareModel() {
                 accessibilityIdentifier:nil
                 detailTextBlock:nil
                 selectBlock:^BOOL (YTSettingsCell *cell, NSUInteger arg1) {
-                    NSMutableArray *features = [NSMutableArray array];
                     updateAllKeys();
-                    for (NSString *key in allKeys) {
-                        if ([key hasPrefix:Prefix]) {
-                            NSString *displayKey = [key substringFromIndex:Prefix.length + 1];
-                            [features addObject:[NSString stringWithFormat:@"%@: %d", displayKey, [defaults boolForKey:key]]];
-                        }
+                    NSPredicate *prefixPredicate = [NSPredicate predicateWithFormat:@"SELF BEGINSWITH %@", Prefix];
+                    NSSet *filteredKeys = [allKeysSet filteredSetUsingPredicate:prefixPredicate];
+
+                    NSMutableArray *features = [NSMutableArray arrayWithCapacity:[filteredKeys count]];
+                    for (NSString *key in filteredKeys) {
+                        NSString *displayKey = [key substringFromIndex:prefixLength + 1];
+                        [features addObject:[NSString stringWithFormat:@"%@: %d", displayKey, [defaults boolForKey:key]]];
                     }
                     [features sortUsingSelector:@selector(localizedCaseInsensitiveCompare:)];
                     [features insertObject:[NSString stringWithFormat:LOC(@"TOTAL_MODIFIED_SETTINGS"), features.count] atIndex:0];
@@ -310,9 +368,10 @@ static NSString *getHardwareModel() {
                 selectBlock:^BOOL (YTSettingsCell *cell, NSUInteger arg1) {
                     YTMAlertView *alertView = [YTMAlertViewClass confirmationDialogWithAction:^{
                         updateAllKeys();
-                        for (NSString *key in allKeys) {
-                            if ([key hasPrefix:Prefix])
-                                [defaults removeObjectForKey:key];
+                        NSPredicate *prefixPredicate = [NSPredicate predicateWithFormat:@"SELF BEGINSWITH %@", Prefix];
+                        NSSet *keysToDelete = [allKeysSet filteredSetUsingPredicate:prefixPredicate];
+                        for (NSString *key in keysToDelete) {
+                            [defaults removeObjectForKey:key];
                         }
                         exit(0);
                     } actionTitle:yesText];
@@ -400,5 +459,19 @@ static NSString *getHardwareModel() {
 
 %ctor {
     defaults = [NSUserDefaults standardUserDefaults];
+    prefixLength = [Prefix length];
+    keyCache = [NSMutableDictionary new];
+    categoryCache = [NSMutableDictionary new];
+    titleSortDescriptor = [NSSortDescriptor sortDescriptorWithKey:@"title" ascending:YES];
+    importRegex = [NSRegularExpression regularExpressionWithPattern:@"^(YT.*Config\\..*):\\s*(\\d)$" options:0 error:nil];
+
+    // Clear caches on memory warning to reduce memory footprint
+    [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidReceiveMemoryWarningNotification
+                                                      object:nil
+                                                       queue:[NSOperationQueue mainQueue]
+                                                  usingBlock:^(NSNotification *note) {
+        clearCaches();
+    }];
+
     %init;
 }
